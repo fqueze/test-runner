@@ -96,6 +96,11 @@ export function getRunArtifactDir(runId: string): string {
   return dir;
 }
 
+export function appendHistoryEntry(entry: HistoryEntry): void {
+  fs.mkdirSync(BASE_DIR, { recursive: true });
+  fs.appendFileSync(HISTORY_PATH, JSON.stringify(entry) + "\n");
+}
+
 export function appendHistory(run: Run): void {
   fs.mkdirSync(BASE_DIR, { recursive: true });
 

@@ -3,12 +3,25 @@ import * as fs from "fs";
 import { getRun, readHistory } from "./run-store";
 import { AppConfig, HistoryEntryWithStaleness } from "./types";
 import { getRevision } from "./revision";
+import { PeerManager } from "./peer-manager";
 
-export function createRoutes(config: AppConfig): Router {
+export function createRoutes(config: AppConfig, peerManager?: PeerManager): Router {
 const router = Router();
 
 router.get("/api/runs/:id/log", (req: Request, res: Response) => {
-  const run = getRun(req.params.id);
+  const runId = req.params.id;
+
+  // Check if this is a peer run (prefixed with peerAddress~)
+  if (peerManager) {
+    const parsed = peerManager.parsePeerRunId(runId);
+    if (parsed) {
+      const query = req.query.format === "text" ? "?format=text" : "";
+      peerManager.proxyGet(parsed.peerAddress, `/api/runs/${parsed.originalId}/log${query}`, res);
+      return;
+    }
+  }
+
+  const run = getRun(runId);
   if (!run) {
     res.status(404).json({ error: "Run not found" });
     return;
@@ -25,7 +38,18 @@ router.get("/api/runs/:id/log", (req: Request, res: Response) => {
 });
 
 router.get("/api/runs/:id/profile", (req: Request, res: Response) => {
-  const run = getRun(req.params.id);
+  const runId = req.params.id;
+
+  // Check if this is a peer run
+  if (peerManager) {
+    const parsed = peerManager.parsePeerRunId(runId);
+    if (parsed) {
+      peerManager.proxyGet(parsed.peerAddress, `/api/runs/${parsed.originalId}/profile`, res);
+      return;
+    }
+  }
+
+  const run = getRun(runId);
   if (!run) {
     res.status(404).json({ error: "Run not found" });
     return;
@@ -41,10 +65,17 @@ router.get("/api/runs/:id/profile", (req: Request, res: Response) => {
 });
 
 router.get("/api/history", (_req: Request, res: Response) => {
-  // Resolve current revision for each config
+  // Resolve current revision for each local config
   const currentRevisions = new Map<string, string>();
   for (const c of config.configs) {
     currentRevisions.set(c.name, getRevision(c.mozilla_src));
+  }
+
+  // Add peer revisions
+  if (peerManager) {
+    for (const [name, rev] of peerManager.getPeerRevisions()) {
+      currentRevisions.set(name, rev);
+    }
   }
 
   const history = readHistory();
@@ -318,4 +349,3 @@ function addHistoryRow(r) {
 </script>
 </body>
 </html>`;
-

@@ -36,5 +36,16 @@ export function loadConfig(): AppConfig {
     }
   }
 
+  if (config.peers) {
+    if (!Array.isArray(config.peers)) {
+      throw new Error("'peers' must be an array if specified");
+    }
+    for (const p of config.peers) {
+      if (!p.address) {
+        throw new Error(`Each peer must have an 'address'. Got: ${JSON.stringify(p)}`);
+      }
+    }
+  }
+
   return config;
 }

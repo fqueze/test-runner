@@ -4,9 +4,14 @@ export interface BuildConfig {
   obj_dir: string;
 }
 
+export interface PeerConfig {
+  address: string;
+}
+
 export interface AppConfig {
   port: number;
   configs: BuildConfig[];
+  peers?: PeerConfig[];
 }
 
 export type RunStatus = "PASS" | "FAIL" | "ERROR" | "TIMEOUT";
@@ -35,7 +40,7 @@ export interface Run {
 
 export interface WsConfigsMessage {
   type: "configs";
-  configs: { name: string }[];
+  configs: { name: string; revision?: string }[];
 }
 
 export interface WsRunQueuedMessage {
@@ -64,6 +69,10 @@ export interface WsRunCompletedMessage {
   duration_seconds: number;
   exit_code: number;
   summary: string;
+  created_at?: string;
+  started_at?: string;
+  finished_at?: string;
+  revision?: string;
 }
 
 export interface WsRunErrorMessage {

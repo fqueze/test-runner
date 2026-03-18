@@ -2,7 +2,9 @@ import WebSocket, { WebSocketServer } from "ws";
 import { AppConfig, WsClientMessage, WsServerMessage, Run } from "./types";
 import { executeTestRun, RunCallbacks } from "./test-runner";
 import { generateRunId, createRun } from "./run-store";
+import { getRevision } from "./revision";
 import { log, logError } from "./log";
+import { PeerManager } from "./peer-manager";
 
 // Global run queue: mach test binds to fixed ports (8888, etc.) so only one run at a time.
 let runQueue: Promise<void> = Promise.resolve();
@@ -12,12 +14,22 @@ function enqueueRun(fn: () => Promise<void>): void {
 }
 
 let wssInstance: WebSocketServer | null = null;
+let peerManagerInstance: PeerManager | null = null;
 
 export function setWss(wss: WebSocketServer): void {
   wssInstance = wss;
 }
 
-function broadcast(msg: WsServerMessage): void {
+export function setPeerManager(pm: PeerManager): void {
+  peerManagerInstance = pm;
+
+  // When peer configs change, broadcast updated config list to all dashboard clients
+  pm.onConfigsChanged(() => {
+    broadcastConfigsToAll();
+  });
+}
+
+export function broadcast(msg: WsServerMessage): void {
   if (!wssInstance) return;
   const data = JSON.stringify(msg);
   for (const client of wssInstance.clients) {
@@ -27,11 +39,34 @@ function broadcast(msg: WsServerMessage): void {
   }
 }
 
+function getAggregatedConfigs(config: AppConfig): { name: string; revision?: string }[] {
+  const localConfigs = config.configs.map((c) => ({
+    name: c.name,
+    revision: getRevision(c.mozilla_src),
+  }));
+
+  if (!peerManagerInstance) return localConfigs;
+
+  const peerConfigs = peerManagerInstance.getAggregatedConfigs();
+  return [...localConfigs, ...peerConfigs];
+}
+
+// Cache the AppConfig so we can rebuild aggregated configs on peer changes
+let appConfigRef: AppConfig | null = null;
+
+function broadcastConfigsToAll(): void {
+  if (!appConfigRef) return;
+  const configs = getAggregatedConfigs(appConfigRef);
+  broadcast({ type: "configs", configs });
+}
+
 export function handleWsConnection(ws: WebSocket, config: AppConfig): void {
-  // Send available configs on connection
+  appConfigRef = config;
+
+  // Send available configs on connection (local + peer)
   const configsMsg: WsServerMessage = {
     type: "configs",
-    configs: config.configs.map((c) => ({ name: c.name })),
+    configs: getAggregatedConfigs(config),
   };
   ws.send(JSON.stringify(configsMsg));
 
@@ -58,7 +93,14 @@ function handleRunRequest(
   msg: WsClientMessage & { type: "run" }
 ): void {
   const buildConfig = appConfig.configs.find((c) => c.name === msg.config);
+
+  // If config is not local, try forwarding to a peer
   if (!buildConfig) {
+    if (peerManagerInstance && peerManagerInstance.forwardRunToPeer(msg.config, msg)) {
+      log(`Forwarded run to peer for config "${msg.config}"`);
+      return;
+    }
+
     log(`WS rejected run: unknown config "${msg.config}"`);
     broadcast({
       type: "run_error",
@@ -102,6 +144,10 @@ function handleRunRequest(
         duration_seconds: run.duration_seconds!,
         exit_code: run.exit_code!,
         summary: run.summary!,
+        created_at: run.created_at,
+        started_at: run.started_at || undefined,
+        finished_at: run.finished_at || undefined,
+        revision: run.revision || undefined,
       });
     },
     onError(run: Run, error: string) {

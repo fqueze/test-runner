@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "add-config": "node add-config.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
