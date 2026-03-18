@@ -143,6 +143,7 @@ export async function executeTestRun(
 }
 
 function getDescendants(pid: number): number[] {
+  if (process.platform === "win32") return []; // handled by taskkill /t
   try {
     const output = execFileSync("ps", ["--ppid", String(pid), "-o", "pid="], {
       encoding: "utf-8",
@@ -160,6 +161,12 @@ function getDescendants(pid: number): number[] {
 }
 
 function killProcessTree(pid: number): void {
+  if (process.platform === "win32") {
+    try {
+      execFileSync("taskkill", ["/pid", String(pid), "/t", "/f"], { timeout: 5000 });
+    } catch {}
+    return;
+  }
   // Collect entire tree before killing (killing parent first can reparent children)
   const descendants = getDescendants(pid);
   const allPids = [pid, ...descendants];
@@ -180,6 +187,7 @@ function spawnMach(
       child = spawn(machPath, args, {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
+        shell: process.platform === "win32",
       });
     } catch (err) {
       return reject(new Error(`Failed to spawn mach: ${err}`));
