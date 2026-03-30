@@ -44,23 +44,15 @@ export function createRun(
   return run;
 }
 
-export function getRunArtifactPaths(runId: string): { log_path: string | null; profile_path: string | null } {
-  const dir = path.join(RUNS_DIR, runId);
-  const logPath = path.join(dir, "log-raw.json");
-  const profilePath = path.join(dir, "profile.json");
-  return {
-    log_path: fs.existsSync(logPath) ? logPath : null,
-    profile_path: fs.existsSync(profilePath) ? profilePath : null,
-  };
-}
-
 export function getRun(runId: string): Run | undefined {
   const memRun = runs.get(runId);
   if (memRun) return memRun;
 
   // Fall back to on-disk artifacts for runs from previous sessions
-  const artifacts = getRunArtifactPaths(runId);
-  if (!artifacts.log_path && !artifacts.profile_path) return undefined;
+  const dir = path.join(RUNS_DIR, runId);
+  const logPath = path.join(dir, "log-raw.json");
+  const logExists = fs.existsSync(logPath);
+  if (!logExists) return undefined;
 
   return {
     run_id: runId,
@@ -77,8 +69,8 @@ export function getRun(runId: string): Run | undefined {
     created_at: "",
     started_at: null,
     finished_at: null,
-    log_path: artifacts.log_path,
-    profile_path: artifacts.profile_path,
+    log_path: logExists ? logPath : null,
+    profile_path: null,
     revision: null,
   };
 }

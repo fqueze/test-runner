@@ -72,17 +72,14 @@ export async function executeTestRun(
     const { status, reproduced, summary } = parseRawLog(logPath, exitCode);
     log(`[${runId}] Result: ${status} — ${summary} (reproduced: ${reproduced})`);
 
-    // Copy artifacts to persistent storage
+    // Copy log to persistent storage (source is in a temp dir that gets cleaned up)
     const artifactDir = getRunArtifactDir(runId);
     if (fs.existsSync(logPath)) {
       fs.copyFileSync(logPath, path.join(artifactDir, "log-raw.json"));
     }
 
-    // Find and copy profile (only if produced during this run)
+    // Find profile (served directly from source location, no copy needed)
     const profileSrc = findLatestProfile(config, runStartTime);
-    if (profileSrc) {
-      fs.copyFileSync(profileSrc, path.join(artifactDir, "profile.json"));
-    }
 
     updateRun(runId, {
       status,
@@ -92,9 +89,7 @@ export async function executeTestRun(
       duration_seconds: durationSeconds,
       finished_at: finishedAt,
       log_path: path.join(artifactDir, "log-raw.json"),
-      profile_path: profileSrc
-        ? path.join(artifactDir, "profile.json")
-        : null,
+      profile_path: profileSrc,
     });
 
     appendHistory(run);
@@ -115,9 +110,6 @@ export async function executeTestRun(
       fs.copyFileSync(logPath, path.join(artifactDir, "log-raw.json"));
     }
     const profileSrc = findLatestProfile(config, runStartTime);
-    if (profileSrc) {
-      fs.copyFileSync(profileSrc, path.join(artifactDir, "profile.json"));
-    }
 
     updateRun(runId, {
       status: "TIMEOUT",
@@ -128,9 +120,7 @@ export async function executeTestRun(
       log_path: fs.existsSync(path.join(artifactDir, "log-raw.json"))
         ? path.join(artifactDir, "log-raw.json")
         : null,
-      profile_path: profileSrc
-        ? path.join(artifactDir, "profile.json")
-        : null,
+      profile_path: profileSrc,
     });
 
     appendHistory(run);

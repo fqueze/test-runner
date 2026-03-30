@@ -1,8 +1,9 @@
 import WebSocket, { WebSocketServer } from "ws";
-import { AppConfig, WsClientMessage, WsServerMessage, Run } from "./types";
+import { AppConfig, WsClientMessage, WsServerMessage, WsUpdateRequest, Run } from "./types";
 import { executeTestRun, RunCallbacks } from "./test-runner";
-import { generateRunId, createRun } from "./run-store";
-import { getRevision } from "./revision";
+import { executeUpdate, UpdateCallbacks } from "./build-updater";
+import { generateRunId, createRun, appendHistoryEntry } from "./run-store";
+import { getRevision, getBranch } from "./revision";
 import { log, logError } from "./log";
 import { PeerManager } from "./peer-manager";
 
@@ -39,10 +40,12 @@ export function broadcast(msg: WsServerMessage): void {
   }
 }
 
-function getAggregatedConfigs(config: AppConfig): { name: string; revision?: string }[] {
+function getAggregatedConfigs(config: AppConfig): { name: string; revision?: string; branch?: string }[] {
   const localConfigs = config.configs.map((c) => ({
     name: c.name,
     revision: getRevision(c.mozilla_src),
+    branch: getBranch(c.mozilla_src),
+    mozilla_src: c.mozilla_src,
   }));
 
   if (!peerManagerInstance) return localConfigs;
@@ -82,10 +85,96 @@ export function handleWsConnection(ws: WebSocket, config: AppConfig): void {
     if (msg.type === "run") {
       log(`WS request: run ${msg.test} on ${msg.config} (request_id: ${msg.request_id})`);
       handleRunRequest(config, msg);
+    } else if (msg.type === "update_builds") {
+      log(`WS request: update_builds (update_id: ${msg.update_id}, configs: ${msg.configs ? msg.configs.join(", ") : "all"})`);
+      handleUpdateRequest(config, msg);
     } else {
       log(`WS unknown message type: ${(msg as any).type}`);
     }
   });
+}
+
+function handleUpdateRequest(
+  appConfig: AppConfig,
+  msg: WsUpdateRequest
+): void {
+  const revision = msg.revision || "origin/main";
+
+  // Filter configs if specific ones requested
+  const targetConfigs = msg.configs
+    ? appConfig.configs.filter((c) => msg.configs!.includes(c.name))
+    : appConfig.configs;
+
+  // Forward to peers
+  if (peerManagerInstance) {
+    peerManagerInstance.forwardUpdateToPeers(msg);
+  }
+
+  if (targetConfigs.length === 0 && !peerManagerInstance) {
+    broadcast({
+      type: "update_completed",
+      update_id: msg.update_id,
+      success: true,
+      results: [],
+    });
+    return;
+  }
+
+  const callbacks: UpdateCallbacks = {
+    onStarted() {
+      broadcast({
+        type: "update_started",
+        update_id: msg.update_id,
+      });
+    },
+    onOutput(sourceTree, stream, text) {
+      broadcast({
+        type: "update_output",
+        update_id: msg.update_id,
+        source_tree: sourceTree,
+        stream,
+        text,
+      });
+    },
+    onCompleted(results) {
+      // Record each updated tree in history, mapped to its config names
+      for (const result of results) {
+        const configsForTree = targetConfigs.filter((c) => c.mozilla_src === result.source_tree);
+        for (const cfg of configsForTree) {
+          appendHistoryEntry({
+            run_id: msg.update_id,
+            test: "mach build",
+            config: cfg.name,
+            status: result.success ? "PASS" : "FAIL",
+            reproduced: false,
+            exit_code: result.success ? 0 : 1,
+            created_at: result.started_at || new Date().toISOString(),
+            started_at: result.started_at || new Date().toISOString(),
+            finished_at: result.finished_at || new Date().toISOString(),
+            duration_seconds: result.duration_seconds || 0,
+            revision: result.new_revision || getRevision(cfg.mozilla_src),
+            kind: "update",
+            profile_path: result.profile_path,
+          });
+        }
+      }
+
+      broadcast({
+        type: "update_completed",
+        update_id: msg.update_id,
+        success: results.every((r) => r.success),
+        results,
+      });
+      // Refresh configs with new revisions/branches
+      broadcastConfigsToAll();
+    },
+  };
+
+  enqueueRun(() =>
+    executeUpdate(targetConfigs, revision, msg.update_id, callbacks).catch((err) => {
+      logError("Unhandled error in executeUpdate:", err);
+    })
+  );
 }
 
 function handleRunRequest(

@@ -40,7 +40,7 @@ export interface Run {
 
 export interface WsConfigsMessage {
   type: "configs";
-  configs: { name: string; revision?: string }[];
+  configs: { name: string; revision?: string; branch?: string; mozilla_src?: string }[];
 }
 
 export interface WsRunQueuedMessage {
@@ -82,12 +82,46 @@ export interface WsRunErrorMessage {
   error: string;
 }
 
+export interface WsUpdateStartedMessage {
+  type: "update_started";
+  update_id: string;
+}
+
+export interface WsUpdateOutputMessage {
+  type: "update_output";
+  update_id: string;
+  source_tree: string;
+  stream: "stdout" | "stderr" | "status";
+  text: string;
+}
+
+export interface WsUpdateCompletedMessage {
+  type: "update_completed";
+  update_id: string;
+  success: boolean;
+  results: UpdateResult[];
+}
+
+export interface UpdateResult {
+  source_tree: string;
+  success: boolean;
+  new_revision?: string;
+  error?: string;
+  profile_path?: string;
+  duration_seconds?: number;
+  started_at?: string;
+  finished_at?: string;
+}
+
 export type WsServerMessage =
   | WsConfigsMessage
   | WsRunQueuedMessage
   | WsRunStartedMessage
   | WsRunCompletedMessage
-  | WsRunErrorMessage;
+  | WsRunErrorMessage
+  | WsUpdateStartedMessage
+  | WsUpdateOutputMessage
+  | WsUpdateCompletedMessage;
 
 // WebSocket messages: Client → Server
 
@@ -99,7 +133,14 @@ export interface WsRunRequest {
   extra_args?: string[];
 }
 
-export type WsClientMessage = WsRunRequest;
+export interface WsUpdateRequest {
+  type: "update_builds";
+  update_id: string;
+  configs?: string[];
+  revision?: string;
+}
+
+export type WsClientMessage = WsRunRequest | WsUpdateRequest;
 
 // History entry (stored in history.jsonl)
 
@@ -115,6 +156,8 @@ export interface HistoryEntry {
   finished_at: string;
   duration_seconds: number;
   revision: string;
+  kind?: "test" | "update";
+  profile_path?: string;
 }
 
 // History entry as returned by GET /api/history (with staleness check)

@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import * as http from "http";
-import { AppConfig, WsServerMessage, WsRunRequest, HistoryEntry, RunStatus } from "./types";
+import { AppConfig, WsServerMessage, WsRunRequest, WsUpdateRequest, HistoryEntry, RunStatus } from "./types";
 import { appendHistoryEntry } from "./run-store";
 import { log, logError } from "./log";
 
@@ -10,6 +10,7 @@ const RECONNECT_DELAY_MS = 5_000;
 interface PeerConfigEntry {
   name: string;
   revision?: string;
+  branch?: string;
 }
 
 type BroadcastFn = (msg: WsServerMessage) => void;
@@ -92,6 +93,11 @@ class PeerConnection {
         this.recordCompletion(msg);
       }
     }
+
+    // Relay update messages from peers
+    if (msg.type === "update_started" || msg.type === "update_output" || msg.type === "update_completed") {
+      this.broadcast(msg);
+    }
   }
 
   private recordCompletion(msg: any): void {
@@ -113,6 +119,12 @@ class PeerConnection {
   }
 
   forwardRun(msg: WsRunRequest): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+
+  forwardMessage(msg: object): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
     }
@@ -198,11 +210,11 @@ export class PeerManager {
     }
   }
 
-  getAggregatedConfigs(): { name: string; revision?: string }[] {
-    const configs: { name: string; revision?: string }[] = [];
+  getAggregatedConfigs(): { name: string; revision?: string; branch?: string }[] {
+    const configs: { name: string; revision?: string; branch?: string }[] = [];
     for (const peer of this.peers) {
       for (const c of peer.getConfigs()) {
-        configs.push({ name: c.name, revision: c.revision });
+        configs.push({ name: c.name, revision: c.revision, branch: c.branch });
       }
     }
     return configs;
@@ -236,6 +248,23 @@ export class PeerManager {
       }
     }
     return null;
+  }
+
+  forwardUpdateToPeers(msg: WsUpdateRequest): void {
+    for (const peer of this.peers) {
+      if (!peer.connected) continue;
+
+      // If specific configs requested, only forward to peers that have matching ones
+      if (msg.configs) {
+        const peerConfigNames = peer.getConfigs().map((c) => c.name);
+        const relevant = msg.configs.filter((name) => peerConfigNames.includes(name));
+        if (relevant.length === 0) continue;
+        // Forward with only the relevant config names for this peer
+        peer.forwardMessage({ ...msg, configs: relevant });
+      } else {
+        peer.forwardMessage(msg);
+      }
+    }
   }
 
   forwardRunToPeer(configName: string, msg: WsRunRequest): boolean {
