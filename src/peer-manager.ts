@@ -208,14 +208,16 @@ export class PeerManager {
     return configs;
   }
 
+  private _lastConfigsSnapshot: string = "[]";
+
   broadcastAggregatedConfigs(): void {
-    // This is called when peer configs change.
-    // The ws-handler will pick up the new configs on the next connection.
-    // For existing connections, we need to broadcast the update.
-    // Import is circular, so we use the broadcast function passed to PeerConnection.
-    // The broadcast already happens via the PeerConnection's handleMessage for configs.
-    // We need a way to push updated configs to all dashboard clients.
-    // This is handled by re-broadcasting from ws-handler.
+    // Only broadcast when the set of available configs actually changes,
+    // not on every reconnection attempt to an offline peer.
+    const configs = this.getAggregatedConfigs();
+    const snapshot = JSON.stringify(configs);
+    if (snapshot === this._lastConfigsSnapshot) return;
+    this._lastConfigsSnapshot = snapshot;
+
     if (this._onConfigsChanged) {
       this._onConfigsChanged();
     }
