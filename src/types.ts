@@ -40,7 +40,7 @@ export interface Run {
 
 export interface WsConfigsMessage {
   type: "configs";
-  configs: { name: string; revision?: string; branch?: string; mozilla_src?: string }[];
+  configs: { name: string; revision?: string; branch?: string; mozilla_src?: string; local?: boolean }[];
 }
 
 export interface WsRunQueuedMessage {

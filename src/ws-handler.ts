@@ -42,12 +42,13 @@ export function broadcast(msg: WsServerMessage): void {
   }
 }
 
-function getAggregatedConfigs(config: AppConfig): { name: string; revision?: string; branch?: string }[] {
+function getAggregatedConfigs(config: AppConfig): { name: string; revision?: string; branch?: string; local?: boolean }[] {
   const localConfigs = config.configs.map((c) => ({
     name: c.name,
     revision: getRevision(c.mozilla_src),
     branch: getBranch(c.mozilla_src),
     mozilla_src: c.mozilla_src,
+    local: true,
   }));
 
   if (!peerManagerInstance) return localConfigs;
