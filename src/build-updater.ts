@@ -163,7 +163,7 @@ function spawnStreaming(
       clearTimeout(hardTimer);
       if (inactivityTimer) clearTimeout(inactivityTimer);
       try { child.kill("SIGKILL"); } catch {}
-      setTimeout(() => reject(new Error(reason)), 1000);
+      reject(new Error(reason));
     };
 
     const hardTimer = setTimeout(() => {

@@ -1,5 +1,5 @@
 import WebSocket, { WebSocketServer } from "ws";
-import { AppConfig, WsClientMessage, WsServerMessage, WsUpdateRequest, Run } from "./types";
+import { AppConfig, WsClientMessage, WsServerMessage, WsUpdateRequest, UpdateResult, Run } from "./types";
 import { executeTestRun, RunCallbacks } from "./test-runner";
 import { executeUpdate, UpdateCallbacks } from "./build-updater";
 import { generateRunId, createRun, appendHistoryEntry } from "./run-store";
@@ -7,11 +7,13 @@ import { getRevision, getBranch } from "./revision";
 import { log, logError } from "./log";
 import { PeerManager } from "./peer-manager";
 
-// Global run queue: mach test binds to fixed ports (8888, etc.) so only one run at a time.
-let runQueue: Promise<void> = Promise.resolve();
+// Per-source-tree run queues: runs on different source trees execute in parallel,
+// while runs sharing the same source tree remain sequential.
+const runQueues = new Map<string, Promise<void>>();
 
-function enqueueRun(fn: () => Promise<void>): void {
-  runQueue = runQueue.then(fn, fn); // run even if previous failed
+function enqueueRun(sourceTree: string, fn: () => Promise<void>): void {
+  const current = runQueues.get(sourceTree) || Promise.resolve();
+  runQueues.set(sourceTree, current.then(fn, fn)); // run even if previous failed
 }
 
 let wssInstance: WebSocketServer | null = null;
@@ -126,61 +128,82 @@ function handleUpdateRequest(
     return;
   }
 
-  const callbacks: UpdateCallbacks = {
-    onStarted() {
-      broadcast({
-        type: "update_started",
-        update_id: msg.update_id,
-      });
-    },
-    onOutput(sourceTree, stream, text) {
-      broadcast({
-        type: "update_output",
-        update_id: msg.update_id,
-        source_tree: sourceTree,
-        stream,
-        text,
-      });
-    },
-    onCompleted(results) {
-      // Record each updated tree in history, mapped to its config names
-      for (const result of results) {
-        const configsForTree = targetConfigs.filter((c) => c.mozilla_src === result.source_tree);
-        for (const cfg of configsForTree) {
-          appendHistoryEntry({
-            run_id: msg.update_id,
-            test: "mach build",
-            config: cfg.name,
-            status: result.success ? "PASS" : "FAIL",
-            reproduced: false,
-            exit_code: result.success ? 0 : 1,
-            created_at: result.started_at || new Date().toISOString(),
-            started_at: result.started_at || new Date().toISOString(),
-            finished_at: result.finished_at || new Date().toISOString(),
-            duration_seconds: result.duration_seconds || 0,
-            revision: result.new_revision || getRevision(cfg.mozilla_src),
-            kind: "update",
-            profile_path: result.profile_path,
-          });
-        }
+  // Broadcast started immediately
+  broadcast({ type: "update_started", update_id: msg.update_id });
+
+  // Group configs by source tree and enqueue each tree independently
+  const treeConfigs = new Map<string, typeof targetConfigs>();
+  for (const c of targetConfigs) {
+    const existing = treeConfigs.get(c.mozilla_src);
+    if (existing) existing.push(c);
+    else treeConfigs.set(c.mozilla_src, [c]);
+  }
+
+  const resultPromises: Promise<UpdateResult[]>[] = [];
+
+  for (const [tree, cfgs] of treeConfigs) {
+    const resultPromise = new Promise<UpdateResult[]>((resolveResults) => {
+      enqueueRun(tree, () =>
+        executeUpdate(cfgs, revision, msg.update_id, {
+          onStarted() {
+            // Already broadcast above
+          },
+          onOutput(sourceTree, stream, text) {
+            broadcast({
+              type: "update_output",
+              update_id: msg.update_id,
+              source_tree: sourceTree,
+              stream,
+              text,
+            });
+          },
+          onCompleted(results) {
+            resolveResults(results);
+          },
+        }).catch((err) => {
+          logError("Unhandled error in executeUpdate:", err);
+          resolveResults([]);
+        })
+      );
+    });
+    resultPromises.push(resultPromise);
+  }
+
+  // When all trees complete, record history and broadcast final result
+  Promise.all(resultPromises).then((resultArrays) => {
+    const allResults = resultArrays.flat();
+
+    // Record each updated tree in history, mapped to its config names
+    for (const result of allResults) {
+      const configsForTree = targetConfigs.filter((c) => c.mozilla_src === result.source_tree);
+      for (const cfg of configsForTree) {
+        appendHistoryEntry({
+          run_id: msg.update_id,
+          test: "mach build",
+          config: cfg.name,
+          status: result.success ? "PASS" : "FAIL",
+          reproduced: false,
+          exit_code: result.success ? 0 : 1,
+          created_at: result.started_at || new Date().toISOString(),
+          started_at: result.started_at || new Date().toISOString(),
+          finished_at: result.finished_at || new Date().toISOString(),
+          duration_seconds: result.duration_seconds || 0,
+          revision: result.new_revision || getRevision(cfg.mozilla_src),
+          kind: "update",
+          profile_path: result.profile_path,
+        });
       }
+    }
 
-      broadcast({
-        type: "update_completed",
-        update_id: msg.update_id,
-        success: results.every((r) => r.success),
-        results,
-      });
-      // Refresh configs with new revisions/branches
-      broadcastConfigsToAll();
-    },
-  };
-
-  enqueueRun(() =>
-    executeUpdate(targetConfigs, revision, msg.update_id, callbacks).catch((err) => {
-      logError("Unhandled error in executeUpdate:", err);
-    })
-  );
+    broadcast({
+      type: "update_completed",
+      update_id: msg.update_id,
+      success: allResults.every((r) => r.success),
+      results: allResults,
+    });
+    // Refresh configs with new revisions/branches
+    broadcastConfigsToAll();
+  });
 }
 
 function handleRunRequest(
@@ -255,8 +278,7 @@ function handleRunRequest(
     },
   };
 
-  // Global queue: mach test uses fixed ports, so runs must be sequential
-  enqueueRun(() =>
+  enqueueRun(buildConfig.mozilla_src, () =>
     executeTestRun(
       run,
       buildConfig,

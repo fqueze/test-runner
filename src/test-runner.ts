@@ -192,8 +192,7 @@ function spawnMach(
       clearTimeout(hardTimer);
       clearTimeout(inactivityTimer);
       killProcessTree(child.pid!);
-      // Wait for ports to be released before rejecting
-      setTimeout(() => reject(new Error(reason)), 2000);
+      reject(new Error(reason));
     };
 
     // Hard timeout: absolute upper bound
