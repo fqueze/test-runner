@@ -261,6 +261,10 @@ function formatElapsed(ms) {
   return m > 0 ? m + 'm ' + sec + 's' : sec + 's';
 }
 
+function matchUpdateId(stored, received) {
+  return stored === received || received.endsWith('~' + stored);
+}
+
 function isConfigUpdating(name) {
   return activeUpdates.has(name);
 }
@@ -400,15 +404,15 @@ function finishUpdate(msg) {
   // Find which configs belong to this update
   const finishedConfigs = [];
   for (const [name, info] of activeUpdates) {
-    if (info.updateId === updateId) {
+    if (matchUpdateId(info.updateId, updateId)) {
       if (info.timerInterval) clearInterval(info.timerInterval);
       const elapsed = info.startTime ? formatElapsed(Date.now() - info.startTime) : '0s';
-      const cfg = currentConfigs.find(cc => cc.name === name);
-      const result = cfg && msg.results.find(r => r.source_tree === cfg.mozilla_src);
-      const success = !result || result.success;
+      // Each update targets one config, so use the first result
+      const result = msg.results && msg.results[0];
+      const success = result ? result.success : msg.success;
       const error = result && !result.success ? result.error : null;
       const hasProfile = result && !!result.profile_path;
-      const sourceTree = cfg ? cfg.mozilla_src : null;
+      const sourceTree = result ? result.source_tree : null;
       finishedUpdates.set(name, { updateId, success, error, elapsed, hasProfile, sourceTree });
       finishedConfigs.push(name);
     }
@@ -581,11 +585,14 @@ function connectWs() {
     if (msg.type === 'update_started') {
       const startTime = Date.now();
       for (const [name, info] of activeUpdates) {
-        if (info.updateId === msg.update_id && !info.started) {
+        if (matchUpdateId(info.updateId, msg.update_id) && !info.started) {
+          var oldId = info.updateId;
+          info.updateId = msg.update_id; // adopt prefixed ID for log/profile URLs
           info.started = true;
           info.startTime = startTime;
           info.timerInterval = setInterval(() => tickTimer(name), 1000);
           tickTimer(name);
+          activeRuns.delete(oldId);
           activeRuns.set(msg.update_id, { status: 'running', test: 'mach build', config: name });
         }
       }
@@ -597,22 +604,26 @@ function connectWs() {
     }
 
     if (msg.type === 'update_completed') {
+      // Collect config names before finishUpdate clears activeUpdates
+      var completedConfigs = [];
+      for (var [cn, ci] of activeUpdates) {
+        if (matchUpdateId(ci.updateId, msg.update_id)) completedConfigs.push(cn);
+      }
       finishUpdate(msg);
-      // Add to history table for each result
-      (msg.results || []).forEach(r => {
-        const matchingConfigs = currentConfigs.filter(c => c.mozilla_src === r.source_tree);
-        matchingConfigs.forEach(c => {
-          addHistoryRow({
-            run_id: msg.update_id,
-            test: 'mach build',
-            config: c.name,
-            status: r.success ? 'PASS' : 'FAIL',
-            reproduced: false,
-            duration_seconds: r.duration_seconds || 0,
-            finished_at: r.finished_at || new Date().toISOString(),
-            stale: false,
-            kind: 'update',
-          });
+
+      // Add to history table
+      var result = msg.results && msg.results[0];
+      completedConfigs.forEach(function(name) {
+        addHistoryRow({
+          run_id: msg.update_id,
+          test: 'mach build',
+          config: name,
+          status: result ? (result.success ? 'PASS' : 'FAIL') : (msg.success ? 'PASS' : 'FAIL'),
+          reproduced: false,
+          duration_seconds: result ? (result.duration_seconds || 0) : 0,
+          finished_at: result ? (result.finished_at || new Date().toISOString()) : new Date().toISOString(),
+          stale: false,
+          kind: 'update',
         });
       });
     }

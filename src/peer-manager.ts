@@ -25,6 +25,8 @@ class PeerConnection {
   private broadcast: BroadcastFn;
   private manager: PeerManager;
   connected = false;
+  // Track which config names were targeted by each update_id
+  private pendingUpdates = new Map<string, string[]>();
 
   constructor(address: string, broadcast: BroadcastFn, manager: PeerManager) {
     this.address = address;
@@ -94,9 +96,15 @@ class PeerConnection {
       }
     }
 
-    // Relay update messages from peers
-    if (msg.type === "update_started" || msg.type === "update_output" || msg.type === "update_completed") {
+    // Relay update messages from peers with prefixed update_id
+    if (msg.update_id && (msg.type === "update_started" || msg.type === "update_output" || msg.type === "update_completed")) {
+      const originalUpdateId = msg.update_id;
+      msg.update_id = `${this.address}~${msg.update_id}`;
       this.broadcast(msg);
+
+      if (msg.type === "update_completed") {
+        this.recordUpdateCompletion(msg, originalUpdateId);
+      }
     }
   }
 
@@ -118,6 +126,33 @@ class PeerConnection {
     appendHistoryEntry(entry);
   }
 
+  private recordUpdateCompletion(msg: any, originalUpdateId: string): void {
+    const now = new Date().toISOString();
+    const results = msg.results || [];
+    const targetedConfigs = this.pendingUpdates.get(originalUpdateId) || this.configs.map((c) => c.name);
+    this.pendingUpdates.delete(originalUpdateId);
+
+    for (const result of results) {
+      for (const configName of targetedConfigs) {
+        appendHistoryEntry({
+          run_id: msg.update_id,
+          test: "mach build",
+          config: configName,
+          status: (result.success ? "PASS" : "FAIL") as RunStatus,
+          reproduced: false,
+          exit_code: result.success ? 0 : 1,
+          created_at: result.started_at || now,
+          started_at: result.started_at || now,
+          finished_at: result.finished_at || now,
+          duration_seconds: result.duration_seconds || 0,
+          revision: result.new_revision || "unknown",
+          kind: "update",
+          profile_path: result.profile_path,
+        });
+      }
+    }
+  }
+
   forwardRun(msg: WsRunRequest): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
@@ -127,6 +162,11 @@ class PeerConnection {
   forwardMessage(msg: object): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+    }
+    // Track targeted configs for update messages
+    const m = msg as any;
+    if (m.type === "update_builds" && m.update_id) {
+      this.pendingUpdates.set(m.update_id, m.configs || this.configs.map((c) => c.name));
     }
   }
 

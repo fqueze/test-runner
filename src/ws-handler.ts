@@ -110,6 +110,7 @@ function handleUpdateRequest(
     peerManagerInstance.forwardUpdateToPeers(msg);
   }
 
+  // Nothing to do locally or remotely
   if (targetConfigs.length === 0 && !peerManagerInstance) {
     broadcast({
       type: "update_completed",
@@ -117,6 +118,11 @@ function handleUpdateRequest(
       success: true,
       results: [],
     });
+    return;
+  }
+
+  // No local configs to update — peer will handle it
+  if (targetConfigs.length === 0) {
     return;
   }
 
