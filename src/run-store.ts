@@ -70,7 +70,7 @@ export function getRun(runId: string): Run | undefined {
     started_at: null,
     finished_at: null,
     log_path: logExists ? logPath : null,
-    profile_path: null,
+    profile_path: fs.existsSync(path.join(dir, "profile.json")) ? path.join(dir, "profile.json") : null,
     revision: null,
   };
 }

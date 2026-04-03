@@ -12,7 +12,17 @@ const router = Router();
 router.get("/api/runs/:id/log", (req: Request, res: Response) => {
   const runId = req.params.id;
 
-  // Check if this is a peer run (prefixed with peerAddress~)
+  // Serve from local cache (works for both local and peer runs)
+  const run = getRun(runId);
+  if (run?.log_path && fs.existsSync(run.log_path)) {
+    const asText = req.query.format === "text";
+    res.setHeader("Content-Type", asText ? "text/plain; charset=utf-8" : "application/x-ndjson");
+    const stream = fs.createReadStream(run.log_path);
+    stream.pipe(res);
+    return;
+  }
+
+  // Proxy to peer if not cached locally
   if (peerManager) {
     const parsed = peerManager.parsePeerRunId(runId);
     if (parsed) {
@@ -22,26 +32,22 @@ router.get("/api/runs/:id/log", (req: Request, res: Response) => {
     }
   }
 
-  const run = getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "Run not found" });
-    return;
-  }
-  if (!run.log_path || !fs.existsSync(run.log_path)) {
-    res.status(404).json({ error: "Log not available" });
-    return;
-  }
-
-  const asText = req.query.format === "text";
-  res.setHeader("Content-Type", asText ? "text/plain; charset=utf-8" : "application/x-ndjson");
-  const stream = fs.createReadStream(run.log_path);
-  stream.pipe(res);
+  res.status(404).json({ error: "Log not available" });
 });
 
 router.get("/api/runs/:id/profile", (req: Request, res: Response) => {
   const runId = req.params.id;
 
-  // Check if this is a peer run
+  // Serve from local cache (works for both local and peer runs)
+  const run = getRun(runId);
+  if (run?.profile_path && fs.existsSync(run.profile_path)) {
+    res.setHeader("Content-Type", "application/json");
+    const stream = fs.createReadStream(run.profile_path);
+    stream.pipe(res);
+    return;
+  }
+
+  // Proxy to peer if not cached locally
   if (peerManager) {
     const parsed = peerManager.parsePeerRunId(runId);
     if (parsed) {
@@ -50,19 +56,7 @@ router.get("/api/runs/:id/profile", (req: Request, res: Response) => {
     }
   }
 
-  const run = getRun(runId);
-  if (!run) {
-    res.status(404).json({ error: "Run not found" });
-    return;
-  }
-  if (!run.profile_path || !fs.existsSync(run.profile_path)) {
-    res.status(404).json({ error: "Profile not available" });
-    return;
-  }
-
-  res.setHeader("Content-Type", "application/json");
-  const stream = fs.createReadStream(run.profile_path);
-  stream.pipe(res);
+  res.status(404).json({ error: "Profile not available" });
 });
 
 router.get("/api/history", (_req: Request, res: Response) => {

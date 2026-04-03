@@ -1,7 +1,9 @@
 import WebSocket from "ws";
 import * as http from "http";
+import * as fs from "fs";
+import * as path from "path";
 import { AppConfig, WsServerMessage, WsRunRequest, WsUpdateRequest, HistoryEntry, RunStatus } from "./types";
-import { appendHistoryEntry } from "./run-store";
+import { appendHistoryEntry, getRunArtifactDir } from "./run-store";
 import { log, logError } from "./log";
 
 const PING_INTERVAL_MS = 30_000;
@@ -87,12 +89,14 @@ class PeerConnection {
 
     // Relay run lifecycle messages with prefixed run_id
     if (msg.run_id && ["run_queued", "run_started", "run_completed", "run_error"].includes(msg.type)) {
+      const originalRunId = msg.run_id;
       msg.run_id = `${this.address}~${msg.run_id}`;
       this.broadcast(msg);
 
-      // Record completed runs in local history
+      // Record completed runs in local history and cache artifacts
       if (msg.type === "run_completed") {
         this.recordCompletion(msg);
+        this.cacheRunArtifacts(msg.run_id, originalRunId);
       }
     }
 
@@ -124,6 +128,23 @@ class PeerConnection {
       revision: msg.revision || this.getRevision(msg.config) || "unknown",
     };
     appendHistoryEntry(entry);
+  }
+
+  private cacheRunArtifacts(prefixedRunId: string, originalRunId: string): void {
+    const dir = getRunArtifactDir(prefixedRunId);
+    const fetchAndSave = (urlPath: string, filename: string) => {
+      const url = `http://${this.address}${urlPath}`;
+      http.get(url, (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          return;
+        }
+        const dest = fs.createWriteStream(path.join(dir, filename));
+        res.pipe(dest);
+      }).on("error", () => {});
+    };
+    fetchAndSave(`/api/runs/${originalRunId}/log`, "log-raw.json");
+    fetchAndSave(`/api/runs/${originalRunId}/profile`, "profile.json");
   }
 
   private recordUpdateCompletion(msg: any, originalUpdateId: string): void {
